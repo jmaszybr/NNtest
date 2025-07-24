@@ -102,5 +102,6 @@ def train_nn(req: TrainRequest):
             "predictions": predictions.tolist()
         },
         "accuracy": float(clf.score(X, y)),
-        "loss_curve": loss_curve.tolist() if loss_curve is not None else []
+        "loss_curve": list(loss_curve) if loss_curve is not None else []
     }
+
