@@ -58,8 +58,6 @@ class TrainNNRequest(BaseModel):
     X: List[List[float]]
     y: List[int]
     params: NeuralNetworkParams
-    train_split: float = Field(0.7, ge=0.5, le=0.9, description="Training set proportion")
-    val_split: float = Field(0.15, ge=0.1, le=0.3, description="Validation set proportion")
 
 class TrainSVMRequest(BaseModel):
     X: List[List[float]]
@@ -230,7 +228,7 @@ def generate_dataset(req: GenerateRequest):
 
 @app.post("/train-nn")
 def train_neural_network(req: TrainNNRequest):
-    """Train neural network with advanced metrics tracking"""
+    """Train neural network with train/test split (no validation)"""
     try:
         start_time = datetime.now()
         logger.info("Starting neural network training")
@@ -238,41 +236,42 @@ def train_neural_network(req: TrainNNRequest):
         X = np.array(req.X)
         y = np.array(req.y)
         
-        # Enhanced data splitting (train/val/test)
-        test_size = 1.0 - req.train_split - req.val_split
-        
-        # First split: separate test set
-        X_temp, X_test, y_temp, y_test = train_test_split(
-            X, y, test_size=test_size, stratify=y, random_state=42
-        )
-        
-        # Second split: separate train and validation
-        val_size_adjusted = req.val_split / (req.train_split + req.val_split)
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_temp, y_temp, test_size=val_size_adjusted, 
-            stratify=y_temp, random_state=42
+        # Simple train/test split (80/20)
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, stratify=y, random_state=42
         )
         
         # Standardization
         scaler = StandardScaler()
         X_train_std = scaler.fit_transform(X_train)
-        X_val_std = scaler.transform(X_val)
         X_test_std = scaler.transform(X_test)
         
-        # Advanced training
-        trainer = AdvancedMLPTrainer(
-            hidden_layers=req.params.hidden_layers,
+        # Standard MLPClassifier with early stopping based on training loss
+        clf = MLPClassifier(
+            hidden_layer_sizes=tuple(req.params.hidden_layers),
             activation=req.params.activation,
             max_iter=req.params.max_iter,
             learning_rate_init=req.params.learning_rate_init,
             batch_size=req.params.batch_size,
             solver=req.params.solver,
-            alpha=req.params.alpha
+            alpha=req.params.alpha,
+            random_state=42,
+            early_stopping=True,
+            validation_fraction=0.15,  # Uses part of training data for internal validation
+            n_iter_no_change=20,
+            verbose=False
         )
         
-        trainer.fit(X_train_std, y_train, X_val_std, y_val)
+        clf.fit(X_train_std, y_train)
         
-        # Decision boundary
+        # Get training curves
+        train_losses = getattr(clf, "loss_curve_", [])
+        validation_scores = getattr(clf, "validation_scores_", [])
+        
+        # Convert validation scores to loss approximation
+        val_losses = [1.0 - score for score in validation_scores] if validation_scores else []
+        
+        # Decision boundary 
         x_min, x_max = X[:, 0].min() - 1, X[:, 0].max() + 1
         y_min, y_max = X[:, 1].min() - 1, X[:, 1].max() + 1
         xx, yy = np.meshgrid(
@@ -281,16 +280,15 @@ def train_neural_network(req: TrainNNRequest):
         )
         grid_points = np.c_[xx.ravel(), yy.ravel()]
         grid_points_std = scaler.transform(grid_points)
-        predictions = trainer.predict(grid_points_std)
+        predictions = clf.predict(grid_points_std)
         
         # Test predictions
-        y_test_pred = trainer.predict(X_test_std)
+        y_test_pred = clf.predict(X_test_std)
         test_errors = np.where(y_test_pred != y_test)[0]
         
         # Final metrics
-        train_acc = trainer.score(X_train_std, y_train)
-        val_acc = trainer.score(X_val_std, y_val)
-        test_acc = trainer.score(X_test_std, y_test)
+        train_acc = clf.score(X_train_std, y_train)
+        test_acc = clf.score(X_test_std, y_test)
         
         training_time = (datetime.now() - start_time).total_seconds()
         
@@ -301,19 +299,17 @@ def train_neural_network(req: TrainNNRequest):
             },
             "metrics": {
                 "accuracy_train": float(train_acc),
-                "accuracy_val": float(val_acc),
                 "accuracy_test": float(test_acc),
-                "final_train_loss": trainer.train_losses[-1] if trainer.train_losses else None,
-                "final_val_loss": trainer.val_losses[-1] if trainer.val_losses else None,
-                "best_val_loss": float(trainer.best_val_loss),
-                "epochs_trained": len(trainer.train_losses),
+                "final_train_loss": train_losses[-1] if train_losses else None,
+                "final_val_loss": val_losses[-1] if val_losses else None,
+                "epochs_trained": len(train_losses),
                 "training_time_seconds": training_time
             },
             "curves": {
-                "train_loss": trainer.train_losses,
-                "val_loss": trainer.val_losses,
-                "train_accuracy": trainer.train_accuracies,
-                "val_accuracy": trainer.val_accuracies
+                "train_loss": train_losses,
+                "val_loss": val_losses,
+                "train_accuracy": [clf.score(X_train_std, y_train)] * len(train_losses) if train_losses else [],
+                "val_accuracy": validation_scores
             },
             "test_data": {
                 "points": X_test.tolist(),
@@ -323,7 +319,6 @@ def train_neural_network(req: TrainNNRequest):
             },
             "data_splits": {
                 "train_size": len(X_train),
-                "val_size": len(X_val),
                 "test_size": len(X_test)
             }
         }
