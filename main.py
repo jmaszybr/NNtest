@@ -9,10 +9,9 @@ import numpy as np
 
 app = FastAPI()
 
-# Pozwól na CORS (dla Twojej statycznej strony)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],    # Możesz wpisać tu konkretną domenę jak chcesz np. "https://twoja-strona.pl"
+    allow_origins=["*"],  # Możesz wpisać tu konkretną domenę
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -55,7 +54,6 @@ def train_svm(req: TrainRequest):
     clf = SVC(kernel=kernel, C=C, gamma=gamma)
     clf.fit(X, y)
 
-    # Przygotuj siatkę do granicy
     x_min, x_max = X[:, 0].min() - 1, X[:, 0].max() + 1
     y_min, y_max = X[:, 1].min() - 1, X[:, 1].max() + 1
     xx, yy = np.meshgrid(np.linspace(x_min, x_max, 100),
@@ -68,7 +66,8 @@ def train_svm(req: TrainRequest):
             "X_grid": grid_points.tolist(),
             "predictions": predictions.tolist()
         },
-        "accuracy": float(clf.score(X, y))
+        "accuracy": float(clf.score(X, y)),
+        "loss_curve": []
     }
 
 @app.post("/train-nn")
@@ -79,10 +78,17 @@ def train_nn(req: TrainRequest):
     activation = req.params.get("activation", "relu")
     max_iter = req.params.get("max_iter", 300)
 
-    clf = MLPClassifier(hidden_layer_sizes=hidden_layers, activation=activation, max_iter=max_iter, random_state=42)
+    clf = MLPClassifier(
+        hidden_layer_sizes=hidden_layers,
+        activation=activation,
+        max_iter=max_iter,
+        random_state=42,
+        solver="adam",
+        verbose=False
+    )
     clf.fit(X, y)
+    loss_curve = getattr(clf, "loss_curve_", None)
 
-    # Przygotuj siatkę do granicy
     x_min, x_max = X[:, 0].min() - 1, X[:, 0].max() + 1
     y_min, y_max = X[:, 1].min() - 1, X[:, 1].max() + 1
     xx, yy = np.meshgrid(np.linspace(x_min, x_max, 100),
@@ -95,5 +101,6 @@ def train_nn(req: TrainRequest):
             "X_grid": grid_points.tolist(),
             "predictions": predictions.tolist()
         },
-        "accuracy": float(clf.score(X, y))
+        "accuracy": float(clf.score(X, y)),
+        "loss_curve": loss_curve.tolist() if loss_curve is not None else []
     }
